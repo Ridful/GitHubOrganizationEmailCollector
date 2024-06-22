@@ -2,9 +2,9 @@ import requests
 import json
 from lxml import html
 from time import sleep
+import re
 
-#headers = {'User-Agent': 'Mozilla/5.0 (compatible; MSIE 6.0; Windows NT 5.1)'}
-#base_url = "https://github.com/orgs/{organization_name}/people"
+theheaders = {'User-Agent': 'Mozilla/5.0 (compatible; MSIE 6.0; Windows NT 5.1)'}
 
 class GitHubOrg:
     
@@ -41,79 +41,142 @@ def fetch_members(url_content):
         member_id = member.get('id').replace("member-", "")
         print(f"Found member with ID: {member_id}")
         yield member_id
-        
 
-# Function to recursively search for the email key when login matches member_id
-def find_all_emails(json_data, member_id, key):
-    results = set()  # Use a set to store unique values
-    if isinstance(json_data, dict):
-        # Check if the current dictionary has a matching "login" key
-        if json_data.get("login") == member_id:
-            # If "email" key exists, add its value to the results
-            if key in json_data:
-                results.add(json_data[key])
+def get_email_from_patch_url(patch_url):
+    try:
+        print(patch_url)
+        sleep(4.5)
         
-        # Recursively search the dictionary
-        for k, v in json_data.items():
-            results.update(find_all_emails(v, member_id, key))
-    elif isinstance(json_data, list):
-        # Recursively search each item in the list
-        for item in json_data:
-            results.update(find_all_emails(item, member_id, key))
-    return results
+        r = requests.get(url=patch_url)
+        if r.status_code != 200:
+            raise Exception(F"Failed to load page {patch_url}")
+        
+        match = re.search(r'From: .* <(.*?)>', r.text)
+        
+        if match:
+            email = match.group(1)
+            print("Email address:", email)
+            return email
+        else:
+            print("No email address found")
+            return None
+        
+    except requests.exceptions.RequestException as e:
+            print(f"Error making request: {e}")
+    except Exception as err:
+        print(f"An error has occurred: {err}")
 
-def try_get_member_email(member_id: str):
-    #print(f"Hello there: {member_id}")
+        
+def get_member_repo_branch_name(member_repo_url):
+    try:
+        sleep(2.25)
+        member_repo_commits_url = member_repo_url + "/commits"
+        
+        r = requests.get(url=member_repo_commits_url, headers=theheaders)
+        if r.status_code != 200:
+            raise Exception(F"Failed to load page {member_repo_commits_url}")
+        
+        tree = html.fromstring(r.content)
+        
+        # Defines where in the html the branch name is
+        branch_name_xpath = '//*[@id="branch-picker-commits"]/span/span[1]/div/div[2]/span/text()[2]'
+        branch_name = tree.xpath(branch_name_xpath)[0]
+        #print(branch_name)
+        
+        #xpath_expr = "//*[contains(@id, ':-list-view-container')]/ul//*[contains(@id, ':-list-view-node-:')]/div[1]/h4/span/a"
+        # Extract the matching elements
+        #elements = tree.xpath(xpath_expr)
+        
+        # Iterate over the found elements and print their href attribute and text content
+        #for element in elements:
+        #    member_commit_patch = "https://github.com" + element.get("href")
+        #    print(f'Link: \"{member_commit_patch}\".')
+        
+        sleep(1)
+        return branch_name
+                    
+    except requests.exceptions.RequestException as e:
+            print(f"Error making request: {e}")
+    except Exception as err:
+        print(f"An error has occurred: {err}")
+
+def try_get_member_repos(member_id: str):
     sleep(5.5)
     try:
-        gh_api_member_events = f"https://api.github.com/users/{member_id}/events"
+        gh_org_member_repos = f"https://github.com/{member_id}?tab=repositories&q=&type=source"
         
-        r = requests.get(url=gh_api_member_events)
+        r = requests.get(url=gh_org_member_repos)
         if r.status_code != 200:
-            raise Exception(F"Failed to load page {gh_api_member_events}")
+            raise Exception(F"Failed to load page {gh_org_member_repos}")
         
-        member_events_json = r.json()
+        member_repos_content = r.content
         
-        try:
-            unique_emails = find_all_emails(member_events_json, member_id, "email")
-        except requests.exceptions.RequestException as e:
-            print(f"Error making request: {e}")
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON: {e}")
-            
-        print(len(unique_emails))
-        print(type(unique_emails))
-        for email in unique_emails:
-            print(f"Found: {email}")
-            
-        print("----------")
-        #member_events_obj = json.load(r.content)
+        tree = html.fromstring(member_repos_content)
         
+        repos_xpath = '//*[@id="user-repositories-list"]/ul/li/div[1]/div[1]/h3/a'
+        repo_elements = tree.xpath(repos_xpath)
+        
+        repositories_urls = []
+        for repo in repo_elements:
+            repo_url = repo.get('href')
+            repositories_urls.append(repo_url)
+        
+        #if len(repositories_urls) > 0:
+        for repo_url in repositories_urls:
+            repo_url = "https://github.com" + repo_url
+            print(f"URL: {repo_url}")
+            yield repo_url
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Error making request: {e}")
     except Exception as err:
         print(f"An error has occurred: {err}")
     
-    print(gh_api_member_events)
+    print("-----------")
+
 
 def main():
-    organization_name = ""
+    #runelite  #Maldev-Academy
+    #organization_name = "Maldev-Academy"
+    organization_name = "runelite"
+    
     ghorg = GitHubOrg(organization_name)
 
     res_content = get_github_org_content(ghorg.full_url)
     
-    #print(type(res_content))
     if isinstance(res_content, bytes):
         ghorg.org_members.extend(list(fetch_members(res_content)))
     else:
-        #print(type(res_content))
         print("no")
     
     print(len(ghorg.org_members))
     if len(ghorg.org_members) > 0:
+        
+        # Get all repos created by each and every Member of the organization.
+        member_repos_urls = []
         for member in ghorg.org_members:
-            #print(f"Hola  -  {member}")
-            try_get_member_email(member)
-            pass
-    
+            member_repos_urls.extend(list(try_get_member_repos(member)))
+        
+        repo_branch_patch_url_list = []
+        for member_repo_url in member_repos_urls:
+            #print(f"try_get_member_email_from_repo : URL: {member_repo_url}")
+            member_repo_branch_name = get_member_repo_branch_name(member_repo_url)
+            
+            member_repo_commit_branchname_patch_url = f"{member_repo_url}/commit/{member_repo_branch_name}.patch"
+            print(member_repo_commit_branchname_patch_url) ######
+            
+            repo_branch_patch_url_list.append(member_repo_commit_branchname_patch_url)
+            
+        print("söt")
+        unique_emails = set()
+        for patch_url in repo_branch_patch_url_list:
+            res = get_email_from_patch_url(patch_url)
+            print(f"Email: {res}  |  URL/Repository: {patch_url}")
+            unique_emails.add(res)
+            
+        print(unique_emails)
+        for eemail in unique_emails:
+            print(eemail)
     print("done")
 
 if __name__ == "__main__":
